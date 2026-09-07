@@ -1,0 +1,34 @@
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: llmservice-validation
+  region: us-east-1
+  version: "1.31"
+
+# Single managed node group, one g4dn.xlarge — matches the current
+# 4-vCPU "Running On-Demand G and VT instances" quota exactly. Do not
+# raise desiredCapacity above 1 without confirming the quota was
+# increased first, or the node group will silently fail to scale.
+managedNodeGroups:
+  - name: gpu-ng
+    instanceType: g4dn.xlarge
+    # EKS-optimized accelerated AMI — comes with the NVIDIA driver
+    # preinstalled, unlike a plain AL2/AL2023 AMI. This is the whole
+    # reason minikube's driver-install steps aren't needed here, but
+    # the device plugin daemonset still has to be applied manually —
+    # the AMI ships the driver, not the k8s integration.
+    amiFamily: AmazonLinux2023
+    instanceSelector: null
+    desiredCapacity: 1
+    minSize: 1
+    maxSize: 1
+    volumeSize: 100
+    volumeType: gp3
+    ssh:
+      allow: false
+    labels:
+      role: gpu-worker
+    tags:
+      project: llm-serving
+

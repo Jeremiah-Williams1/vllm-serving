@@ -1,0 +1,27 @@
+apiVersion: apps.jerremiah.dev/v1alpha1
+kind: LLMService
+metadata:
+  name: llmservice-sample
+  namespace: default
+spec:
+  # TinyLlama — small enough (~2.2GB in fp16) to load fast and leave plenty
+  # of headroom on a T4's 15360MiB, good for a first real end-to-end test
+  # before trying anything bigger.
+  model: TinyLlama/TinyLlama-1.1B-Chat-v1.0
+
+  image: vllm/vllm-openai:latest
+
+  replicas: 1
+
+  # 1 GPU, no --tensor-parallel-size needed (only added by the reconciler
+  # when gpuCount > 1)
+  gpuCount: 1
+
+  cpuRequest: "500m"
+  memoryRequest: "4Gi"
+
+  port: 8000
+
+  autoscaling:
+    minReplicaCount: 1
+    maxReplicaCount: 2
