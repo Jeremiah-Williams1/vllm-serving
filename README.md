@@ -12,7 +12,7 @@ infrastructure (AWS EKS).
   readiness probe, and KEDA-based autoscaling.
 - **llmservice-cli** — Cobra-based CLI wrapping the operator's API,
   so deploying, checking status on, and rolling back a model doesn't
-  require hand-writing CRD YAML. *(add real link)*
+  require hand-writing CRD YAML. (https://github.com/Jeremiah-Williams1/llmservice-cli)
 
 ## What's proven here
 
