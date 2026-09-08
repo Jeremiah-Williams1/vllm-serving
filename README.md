@@ -2,33 +2,29 @@
 
 An end-to-end AI infrastructure platform for serving LLMs on
 GPU-backed Kubernetes: a custom operator, a CLI for model lifecycle
-management, and this repo — the deployment layer tying them together
-and proving they work against real GPU hardware, both locally and on
-managed cloud infrastructure.
-
-This is the deployment/validation layer of a three-part project. The
-other two pieces:
+management, and this repo — the deployment layer tying them together,
+validated both locally (minikube) and on real managed cloud
+infrastructure (AWS EKS).
 
 - **[llmservice-operator](https://github.com/Jeremiah-Williams1/llmservice-operator)**
-  — the Go Kubernetes operator: a custom `LLMService` CRD and
-  reconciler that deploys vLLM, wires up GPU resource requests, a
-  vLLM-aware readiness probe, and KEDA-based autoscaling.
-- **llmservice-cli** — a Cobra-based CLI wrapping the operator's API,
+  — Go Kubernetes operator: a custom `LLMService` CRD and reconciler
+  that deploys vLLM, wires up GPU resource requests, a vLLM-aware
+  readiness probe, and KEDA-based autoscaling.
+- **llmservice-cli** — Cobra-based CLI wrapping the operator's API,
   so deploying, checking status on, and rolling back a model doesn't
-  require hand-writing CRD YAML. *(link once published)*
+  require hand-writing CRD YAML. *(add real link)*
 
 ## What's proven here
 
-- The same, unmodified manifests reconcile correctly on both a local
-  dev cluster (minikube, with GPU passthrough via `--gpus=all`) and a
-  real managed cluster (AWS EKS, GPU node group on `g4dn.xlarge`) —
-  the operator isn't tied to a dev-only environment.
-- Real inference, not a mock: `TinyLlama/TinyLlama-1.1B-Chat-v1.0`
-  served through vLLM's OpenAI-compatible API, running on an actual
-  NVIDIA T4.
-- Real, honestly-documented failure modes and fixes along the way —
-  see `docs/validation-notes.md` — rather than a sanitized "it just
-  worked" writeup.
+- The same manifests reconcile correctly on both a local dev cluster
+  (minikube, GPU passthrough via `--gpus=all`) and real managed
+  Kubernetes (EKS, GPU node group on `g4dn.xlarge`).
+- Real inference: `TinyLlama/TinyLlama-1.1B-Chat-v1.0` served through
+  vLLM's OpenAI-compatible API on an actual NVIDIA T4, on both
+  clusters.
+- Real, documented failure modes and fixes — see
+  `docs/validation-notes.md` — including one still-open gap: KEDA's
+  default CPU trigger doesn't scale GPU-bound inference.
 
 ## Repo structure
 
@@ -39,100 +35,91 @@ other two pieces:
 ├── cluster/
 │   └── eks-cluster-config.yaml    # eksctl config: 1x g4dn.xlarge node group
 ├── docs/
-│   └── validation-notes.md        # Debugging log: GPU passthrough, EBS I/O
-│                                   # contention, KEDA trigger mismatch
+│   └── validation-notes.md        # Real debugging log
 └── README.md
 ```
 
 ## Prerequisites
 
-- An AWS account with EC2 quota for GPU instances (this project used
-  `g4dn.xlarge` — confirm your account's "Running On-Demand G and VT
-  instances" quota covers at least 4 vCPUs before starting)
-- `aws` CLI configured with credentials
-- `eksctl`, if deploying to real EKS rather than just validating
-  locally
+- AWS account with EC2 quota for GPU instances (`g4dn.xlarge` needs
+  4 vCPUs under the "Running On-Demand G and VT instances" quota —
+  confirm this before creating a cluster, and remember EKS node
+  groups draw from the *same* pool as any GPU EC2 instance you're
+  running for local dev/build work; you cannot run both
+  simultaneously without a higher quota)
+- `aws` CLI configured, with IAM permissions covering EKS, EC2,
+  CloudFormation, and IAM role creation (`eksctl` needs all of these)
+- `eksctl` and `kubectl` installed
+- Docker with `nvidia-container-runtime` set as default (for local
+  GPU passthrough via minikube)
 
-## Setup
-
-### 1. Spin up a GPU-capable EC2 instance
-
-Launch a `g4dn.xlarge` on an **AWS Deep Learning AMI** — this is what
-was used here, and it ships the NVIDIA driver preinstalled, so
-`nvidia-smi` works immediately with no manual driver install step.
-
-### 2. Install remaining dependencies on the instance
-
-```bash
-# Set nvidia as Docker's default runtime
-sudo nvidia-ctk runtime configure --runtime=docker --set-as-default
-sudo systemctl restart docker
-
-# Go (matches this project's go.mod version)
-wget https://go.dev/dl/go1.26.5.linux-amd64.tar.gz
-sudo rm -rf /usr/local/go
-sudo tar -C /usr/local -xzf go1.26.5.linux-amd64.tar.gz
-echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
-source ~/.bashrc
-
-# kubectl
-curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
-
-# minikube (for local validation)
-curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
-sudo install minikube-linux-amd64 /usr/local/bin/minikube
-```
-
-### 3. Clone the operator and this repo
-
-```bash
-git clone https://github.com/Jeremiah-Williams1/llmservice-operator.git
-git clone https://github.com/Jeremiah-Williams1/llm-serving.git
-```
-
-### 4. Validate locally on minikube
+## Setup — local validation (minikube)
 
 ```bash
 minikube start --driver=docker --container-runtime=docker --gpus=all
 
+git clone https://github.com/Jeremiah-Williams1/llmservice-operator.git
 cd llmservice-operator
 make manifests
-make install          # installs the CRD
+make install                    # installs the CRD
 
 eval $(minikube docker-env)
 make docker-build IMG=llmservice-operator:dev
-minikube image load llmservice-operator:dev
+minikube image load llmservice-operator:dev   # required even after
+                                               # docker-build — minikube's
+                                               # cluster runtime (containerd)
+                                               # doesn't automatically see
+                                               # images from the separate
+                                               # Docker daemon docker-env
+                                               # points at
 make deploy IMG=llmservice-operator:dev
 
+kubectl apply --server-side -f https://github.com/kedacore/keda/releases/download/v2.16.0/keda-2.16.0.yaml
 kubectl apply -f ../llm-serving/manifests/llmservice-sample.yaml
 kubectl get pods -w
 ```
 
-### 5. Deploy to real EKS
+## Setup — real EKS
 
 ```bash
 cd llm-serving
 eksctl create cluster -f cluster/eks-cluster-config.yaml
+# newer eksctl versions auto-install the NVIDIA device plugin for
+# GPU node types — confirm with:
+kubectl get pods -n kube-system | grep nvidia
 
-# Apply the NVIDIA device plugin (not automatic on EKS, unlike minikube's --gpus flag)
-kubectl apply -f https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/main/deployments/static/nvidia-device-plugin.yml
+# Build + push the operator image from wherever Docker/the repo live
+# (this project used a separate g4dn.xlarge EC2 instance for the
+# build, since local dev and EKS validation shared the same GPU
+# quota and couldn't run concurrently — see docs/validation-notes.md)
+aws ecr create-repository --repository-name llmservice-operator --region us-east-1
+aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin <account-id>.dkr.ecr.us-east-1.amazonaws.com
+docker tag llmservice-operator:dev <account-id>.dkr.ecr.us-east-1.amazonaws.com/llmservice-operator:dev
+docker push <account-id>.dkr.ecr.us-east-1.amazonaws.com/llmservice-operator:dev
 
-# Push the operator image to ECR, then:
-cd ../llmservice-operator
-make deploy IMG=<your-ecr-uri>/llmservice-operator:dev
+# Deploy — this can run from any machine with kubectl pointed at the
+# cluster (doesn't need GPU access itself); edit
+# config/manager/kustomization.yaml to point the image at your ECR
+# URI before running:
+kubectl apply -k config/crd
+kubectl apply -k config/default
 
-kubectl apply -f ../llm-serving/manifests/llmservice-sample.yaml
+kubectl apply --server-side -f https://github.com/kedacore/keda/releases/download/v2.16.0/keda-2.16.0.yaml
+kubectl apply -f manifests/llmservice-sample.yaml
 ```
 
-### 6. Tear down when done
+## Tear down
 
 ```bash
 eksctl delete cluster -f cluster/eks-cluster-config.yaml
 ```
 
-EKS control plane and GPU node group both cost money while running —
-this was run as a validation exercise, not a persistent deployment.
+Note: `eksctl scale nodegroup` does **not** merge with the existing
+node group spec — it only applies the flags you explicitly pass, so
+partial calls (e.g. just `--nodes=0`) can silently reset
+`--nodes-min`/`--nodes-max` too. Specify all three every time, or
+just delete/recreate the cluster for a clean state, which is what
+this project ultimately did.
 
 ## Validated behavior
 
@@ -141,11 +128,13 @@ this was run as a validation exercise, not a persistent deployment.
 - ✅ GPU resource requests (`nvidia.com/gpu`) scheduled correctly on
   both minikube and EKS
 - ✅ Readiness probe correctly gates `Ready` status on vLLM actually
-  finishing model load, not just container start
+  finishing model load
 - ✅ Real inference confirmed via the OpenAI-compatible
-  `/v1/completions` endpoint
-- ⚠️ KEDA's default CPU-utilization trigger does **not** scale
-  GPU-bound inference workloads — documented in
-  `docs/validation-notes.md` as a known limitation. The correct
-  trigger for this workload would be GPU utilization (DCGM) or vLLM's
-  own queue-depth metric.
+  `/v1/completions` endpoint on both clusters
+- ⚠️ KEDA's default CPU-utilization trigger does not scale GPU-bound
+  inference (see `docs/validation-notes.md`) — the correct trigger
+  would be GPU utilization (DCGM) or vLLM's own queue-depth metric
+- ⚠️ KEDA scaling pods to zero does **not** stop EC2 billing for the
+  underlying node — that requires a node-level autoscaler (Cluster
+  Autoscaler or Karpenter) or a scale-to-zero framework like Knative,
+  neither of which this project implements yet
